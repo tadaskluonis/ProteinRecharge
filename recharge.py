@@ -475,18 +475,45 @@ def update_plot(history, out_folder):
     plt.savefig(Path(out_folder) / "charge_plot.png")
     plt.close()
 
+def get_current_charge(struct, chain_id):
+    """Calculates the current net charge of the specified chain."""
+    model = struct[0]
+    if chain_id not in model:
+        return 0
+    
+    charge = 0
+    for res in model[chain_id]:
+        # Ignore hetero/water
+        if res.id[0] != ' ':
+            continue
+        rname = res.get_resname()
+        if rname in ['LYS', 'ARG']:
+            charge += 1
+        elif rname in ['ASP', 'GLU']:
+            charge -= 1
+    return charge
+
 def estimate_charge_range(struct, cfg: Config, redesign_res: List[str]):
     """Calculates min and max possible charge for redesign_chain, 
-    accounting for fixed residues and number of redesignable spots."""
+    accounting for fixed residues and number of redesignable spots.
+    Returns (current_charge, min_possible_charge, max_possible_charge)."""
     target_chain = struct[0][cfg.redesign_chain]
     fixed_charge = 0
+    current_charge = 0
     for res in target_chain:
         # Ignore hetero/water
         if res.id[0] != ' ':
             continue
+            
+        rname = res.get_resname()
+        # Track current charge for the whole chain
+        if rname in ['LYS', 'ARG']:
+            current_charge += 1
+        elif rname in ['ASP', 'GLU']:
+            current_charge -= 1
+
         key = get_residue_key(res, cfg.redesign_chain)
         if key not in redesign_res:
-            rname = res.get_resname()
             if rname in ['LYS', 'ARG']:
                 fixed_charge += 1
             elif rname in ['ASP', 'GLU']:
@@ -494,7 +521,7 @@ def estimate_charge_range(struct, cfg: Config, redesign_res: List[str]):
                 
     min_possible_charge = fixed_charge - len(redesign_res)
     max_possible_charge = fixed_charge + len(redesign_res)
-    return min_possible_charge, max_possible_charge
+    return current_charge, min_possible_charge, max_possible_charge
 
 # ------------------------------------------------------------------
 # Main Logic
@@ -520,9 +547,9 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         print(f"Using contact-based selection. Selected {len(redesign_res)} residues for redesign.")
     
     # Calculate charge bounds
-    min_possible_charge, max_possible_charge = estimate_charge_range(struct, cfg, redesign_res)
+    current_charge, min_possible_charge, max_possible_charge = estimate_charge_range(struct, cfg, redesign_res)
     
-    print(f"Estimated charge range for chain {cfg.redesign_chain}: [{min_possible_charge}, {max_possible_charge}]")
+    print(f"Current charge: {current_charge} | Possible range: [{min_possible_charge}, {max_possible_charge}]")
     
     desired_charge = cfg.desired_chain_charge
     tolerance = cfg.tolerance

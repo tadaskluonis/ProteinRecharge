@@ -102,7 +102,7 @@ def main():
                 non_binder_count += sum(1 for r in ch if 'CA' in r)
                 
             # Estimated charge range
-            min_possible_charge, max_possible_charge = estimate_charge_range(struct, cfg, redesignable)
+            current_charge, min_possible_charge, max_possible_charge = estimate_charge_range(struct, cfg, redesignable)
 
             plddt_colors = {
                 "very_low_plddt": "0xef821e",
@@ -130,7 +130,7 @@ def main():
                 parts.append(f"{color_text(cat, mapping[cat])}: {cnt}")
 
             print("Counts -> " + ", ".join(parts))
-            print(f"Estimated charge range for chain {cfg.redesign_chain}: [{min_possible_charge}, {max_possible_charge}]")
+            print(f"Current charge: {current_charge} | Possible range: [{min_possible_charge}, {max_possible_charge}]")
             print(f"Target charge: {cfg.desired_chain_charge}")
             
             if cfg.desired_chain_charge < min_possible_charge or cfg.desired_chain_charge > max_possible_charge:
