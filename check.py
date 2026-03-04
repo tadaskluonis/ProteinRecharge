@@ -145,12 +145,15 @@ def main():
             io.set_structure(struct)
             out_path = check_dir / f"{in_file.stem}_check.cif"
             io.save(str(out_path), ChargeColorMapper(redesignable, protected, cfg.redesign_chain))
+            print(f"Check file saved to: {out_path}")
+            print(f"Open this file in Nano Viewer (VScode extention) and color by PLDDT to visualise the selections.\n")
 
         except Exception as e:
             print(f"Error processing {in_file.name}: {e}")
+            import traceback
+            traceback.print_exc()
 
-    print(f"\nAll check files saved to: {check_dir}")
-    print(f"Open {out_path} in Nano Viewer (VScode extention) and color by PLDDT to visualise the selections.")
+    print(f"\nAll operations complete.")
 
 if __name__ == "__main__":
     main()

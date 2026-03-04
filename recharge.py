@@ -7,7 +7,7 @@ import yaml
 import shutil
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 # Biopython
 from Bio.PDB import PDBParser, MMCIFParser, MMCIFIO, Select, NeighborSearch
@@ -74,8 +74,7 @@ class Config:
     ligandmpnn_run_py: str
     ligandmpnn_conda_env: str
     
-    input_structure: Optional[str] = None
-    input_dir: Optional[str] = None
+    inputs: List[Dict[str, str]] = field(default_factory=list)
     
     redesign_chain: str = "A"
     avoid_residues: List[str] = field(default_factory=list)
@@ -108,14 +107,51 @@ def load_config(path):
     return Config(**{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
 
 def get_input_files(cfg: Config) -> List[Path]:
-    input_files = []
-    if cfg.input_dir:
-        p = Path(cfg.input_dir)
-        # Sort to ensure consistent order
-        input_files = sorted(list(p.glob("*.pdb")) + list(p.glob("*.cif")))
-    elif cfg.input_structure:
-        input_files = [Path(cfg.input_structure)]
-    return input_files
+    input_files_raw = []  # Keep track of all files before deduplication
+    
+    def add_file(f):
+        if not f: return
+        p = Path(f)
+        if p.exists():
+            input_files_raw.append(p.resolve())
+
+    def add_dir(d):
+        if not d: return
+        p = Path(d)
+        if p.exists():
+            for ext in ["*.pdb", "*.cif"]:
+                for f in p.glob(ext):
+                    input_files_raw.append(f.resolve())
+
+    # Only process entries in 'inputs' list
+    if not cfg.inputs:
+        print("Warning: No 'inputs' list provided in configuration.")
+
+    for item in cfg.inputs:
+        add_file(item.get("input_pdb_path"))
+        add_dir(item.get("input_pdb_dir"))
+
+    # Check for duplicate stems BEFORE deduplication
+    from collections import defaultdict
+    stems_to_paths = defaultdict(list)
+    for fpath in input_files_raw:
+        stems_to_paths[fpath.stem].append(str(fpath))
+    
+    duplicates = {stem: paths for stem, paths in stems_to_paths.items() if len(paths) > 1}
+    if duplicates:
+        error_msg = "ERROR: Duplicate filenames found in inputs. All input filenames must be unique.\n"
+        error_msg += "This typically happens when the same file is specified both directly and in a directory.\n\n"
+        for stem, paths in sorted(duplicates.items()):
+            error_msg += f"  Duplicate stem: {stem}\n"
+            for p in paths:
+                error_msg += f"    - {p}\n"
+        error_msg += "\nFix: Remove the duplicate file specification from your 'inputs' list."
+        raise ValueError(error_msg)
+
+    # Now deduplicate by using set
+    final_list = sorted(list(set(input_files_raw)))
+    
+    return final_list
 
 def get_protected_residues(structure, cfg: Config):
     """
@@ -372,7 +408,7 @@ def select_residues_sasa(structure, cfg: Config):
     if not sasa_by_res:
         return []
 
-    # Determine selection set based on fraction and absolute threshold
+    # Determine selection set based on frpdb_pathd absolute threshold
     sorted_res = sorted(sasa_by_res.items(), key=lambda kv: kv[1], reverse=True)
     max_sasa = sorted_res[0][1]
 
@@ -393,13 +429,13 @@ def select_residues_sasa(structure, cfg: Config):
 # LigandMPNN Execution & Analysis
 # ------------------------------------------------------------------
 
-def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, extra_args=None):
+def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, pdb_path, extra_args=None):
     bias_str = f"D:{-bias_val:.3f},E:{-bias_val:.3f},K:{bias_val:.3f},R:{bias_val:.3f}"
     res_str = " ".join(residues)
     
     cmd = [
         "python", cfg.ligandmpnn_run_py,
-        "--pdb_path", f'"{Path(cfg.input_structure).resolve()}"',
+        "--pdb_path", f'"{Path(pdb_path).resolve()}"',
         "--out_folder", f'"{Path(out_dir).resolve()}"',
         "--redesigned_residues", f'"{res_str}"',
         "--bias_AA", f'"{bias_str}"',
@@ -536,8 +572,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
     parser = MMCIFParser(QUIET=True) if struct_path.suffix == '.cif' else PDBParser(QUIET=True)
     struct = parser.get_structure(struct_path.stem, str(struct_path))
     
-    # Update current path for the subprocess call
-    cfg.input_structure = str(struct_path)
+    # input_pdb_path is passed directly to run_ligandmpnn
 
     if getattr(cfg, 'selection_method', 'contact') == 'sasa':
         redesign_res = select_residues_sasa(struct, cfg)
@@ -566,7 +601,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         step_dir = protein_out / f"step_{i}_bias_{bias:.3f}"
         step_dir.mkdir(exist_ok=True)
         
-        run_ligandmpnn(cfg, str(step_dir), redesign_res, bias)
+        run_ligandmpnn(cfg, str(step_dir), redesign_res, bias, pdb_path=str(struct_path))
         current_results = process_iteration_results(step_dir)
         
         if not current_results:

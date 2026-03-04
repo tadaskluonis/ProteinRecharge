@@ -5,8 +5,9 @@
 # Example config for running with a local LigandMPNN installation.
 # Install LigandMPNN here: https://github.com/dauparas/LigandMPNN/
 # Edit `ligandmpnn_run_py` and `ligandmpnn_conda_env` below to match your setup.
+inputs:
+  - input_pdb_dir: "examples/"
 
-input_structure: "examples/nipah_binder.pdb"
 out_folder: "outputs/nipah_binder_recharge/"
 
 # If single-chain, you can omit. If multi-chain, set which chain you are redesigning.
@@ -14,7 +15,7 @@ redesign_chain: "A"
 
 # Exclude specific residues from redesign (e.g., binding hot-spots)
 # Format recommendation: chain+resnum (same as your liganmpnn "A3" style).
-avoid_residues: ["A143", "A147"]
+avoid_residues: ["A143", "A147","A1"]
 avoid_residues_distance: 0  # Å; 0 means "only those exact residues"
 
 avoid_salt_bridge_residues: True
