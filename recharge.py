@@ -18,6 +18,53 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+# ANSI Colors
+class Colors:
+    RED = "\033[91m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    CYAN = "\033[96m"
+    MAGENTA = "\033[95m"
+    RESET = "\033[0m"
+
+AA_COLORS = {
+    'D': Colors.RED, 'E': Colors.RED,  # Negative
+    'K': Colors.BLUE, 'R': Colors.BLUE, # Positive
+    'H': Colors.CYAN,                   # Histidine (Polar/Positive)
+    'N': Colors.GREEN, 'Q': Colors.GREEN, 'S': Colors.GREEN, 'T': Colors.GREEN, 'Y': Colors.GREEN, # Polar
+    'A': Colors.YELLOW, 'I': Colors.YELLOW, 'L': Colors.YELLOW, 'M': Colors.YELLOW, 'F': Colors.YELLOW, 'W': Colors.YELLOW, 'V': Colors.YELLOW, 'G': Colors.YELLOW, 'P': Colors.YELLOW, # Non-polar
+    'C': Colors.MAGENTA # Cysteine
+}
+
+def color_aa(aa):
+    return f"{AA_COLORS.get(aa, '')}{aa}{Colors.RESET}"
+
+def print_alignment(seq1, seq2, width=60):
+    """Prints a simple alignment of two sequences with colored mutations."""
+    for i in range(0, len(seq1), width):
+        chunk1 = seq1[i:i+width]
+        chunk2 = seq2[i:i+width]
+        
+        # Original sequence with colored positions that will be changed
+        res1 = []
+        for a, b in zip(chunk1, chunk2):
+            if a != b:
+                res1.append(color_aa(a))
+            else:
+                res1.append(a)
+        print(f"Orig: {''.join(res1)}")
+        
+        # New sequence with colored mutations
+        res2 = []
+        for a, b in zip(chunk1, chunk2):
+            if a != b:
+                res2.append(color_aa(b))
+            else:
+                res2.append(b)
+        print(f"New : {''.join(res2)}")
+        print()
+
 # ------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------
@@ -224,6 +271,10 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, extra_args=None):
         "--batch_size", str(cfg.batch_size),
         "--number_of_batches", "1", 
         "--model_type", "soluble_mpnn",
+        # --pack_side_chains 1 \
+        # --number_of_packs_per_design 0 \
+        "--pack_side_chains", "1",
+        "--number_of_packs_per_design", "1",
         "--seed", str(cfg.seed),
         "--verbose", "0"
     ]
@@ -239,6 +290,20 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, extra_args=None):
     # Run in the directory where the LigandMPNN runner lives so relative model paths resolve
     cwd_dir = Path(cfg.ligandmpnn_run_py).parent
     subprocess.run(full_cmd, shell=True, check=True, executable="/bin/bash", cwd=str(cwd_dir))
+
+def get_native_sequence(step_dir):
+    p = Path(step_dir)
+    seq_dir = p / "seqs"
+    if not seq_dir.exists(): return None
+    
+    fa_file = next(seq_dir.glob("*.fa"), None)
+    if not fa_file: return None
+    
+    lines = fa_file.read_text().splitlines()
+    if len(lines) >= 2:
+        # Native is always index 1 (the first sequence)
+        return lines[1].split(":")[0]
+    return None
 
 def process_iteration_results(step_dir):
     results = []
@@ -342,6 +407,13 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         # Write Fasta
         with open(out_fasta, "w") as f:
             f.write(f">{struct_path.stem}_charge_{best_pick['charge']}\n{best_pick['sequence']}\n")
+        
+        # Get native for alignment
+        # Usually step_0 is run first, so we might find native there or any step.
+        native_seq = get_native_sequence(protein_out / f"step_0_bias_{cfg.initial_bias:.3f}")
+        if native_seq:
+            print(f"\nAlignment for {struct_path.name}:")
+            print_alignment(native_seq, best_pick['sequence'])
         
         # Copy PDB
         if Path(best_pick['path']).exists():
