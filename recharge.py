@@ -407,7 +407,8 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, extra_args=None):
         "--number_of_batches", "1", 
         "--model_type", "soluble_mpnn",
         "--seed", str(cfg.seed),
-        "--verbose", "0"
+        "--verbose", "0",
+        "--parse_these_chains_only", cfg.redesign_chain
     ]
     if extra_args: cmd.extend(extra_args)
 
@@ -531,7 +532,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         tolerance = 0.0
         print(f"⚠️ Falling back to closest available value: {desired_charge} with tolerance {tolerance}")
     
-    bias, step_size, direction, history = cfg.initial_bias, 0.6, 0, []
+    bias, step_size, direction, history = cfg.initial_bias, 0.2, 0, []
     best_overall_results = []
 
     for i in range(cfg.max_evals):
