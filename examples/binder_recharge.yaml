@@ -25,8 +25,10 @@ avoid_H_bonding_residues: True
 avoid_interface_residues_with_chain: "T"
 avoid_interface_residues_with_chain_distance: 6.0  # Å
 
-desired_chain_charge: 5.0
-tolerance: 1.0
+desired_chain_charge: 6.0
+batch_charge_tolerance: 1.0  # Tolerance for mean batch charge to stop bias adjustment
+charge_tolerance: 4.0        # Tolerance for individual sequence charge in final pick
+
 
 # Set this to the path of your LigandMPNN `run.py` file (edit for your installation)
 ligandmpnn_run_py: "/home/tadas/code/LigandMPNN/run.py"

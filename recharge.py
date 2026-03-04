@@ -86,7 +86,8 @@ class Config:
     avoid_H_bonding_residues: bool = False
     
     desired_chain_charge: float = 0.0
-    tolerance: float = 1.0
+    batch_charge_tolerance: float = 1.0  # Tolerance for mean batch charge to stop bias adjustment
+    charge_tolerance: float = 1.0        # Tolerance for individual sequence charge in final pick
     initial_bias: float = 0.0
 
     selection_method: str = "sasa" # 'sasa' or 'contact'
@@ -490,7 +491,23 @@ def process_iteration_results(step_dir):
             name = header.split(",")[0].replace(">", "").strip()
             pdb_path = p / "backbones" / f"{name}.pdb"
             
-            results.append({"name": name, "path": str(pdb_path.absolute()), "charge": charge, "sequence": s})
+            # Parse overall_confidence from header
+            overall_confidence = None
+            for part in header.split(","):
+                if "overall_confidence=" in part:
+                    try:
+                        overall_confidence = float(part.split("=")[1].strip())
+                    except (ValueError, IndexError):
+                        overall_confidence = None
+                    break
+            
+            results.append({
+                "name": name, 
+                "path": str(pdb_path.absolute()), 
+                "charge": charge, 
+                "sequence": s,
+                "overall_confidence": overall_confidence
+            })
     
     if results:
         pd.DataFrame(results).to_csv(p / "design_stats.csv", index=False)
@@ -587,15 +604,16 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
     print(f"Current charge: {current_charge} | Possible range: [{min_possible_charge}, {max_possible_charge}]")
     
     desired_charge = cfg.desired_chain_charge
-    tolerance = cfg.tolerance
+    batch_charge_tolerance = cfg.batch_charge_tolerance
+    charge_tolerance = cfg.charge_tolerance
     if desired_charge < min_possible_charge or desired_charge > max_possible_charge:
         print(f"⚠️ WARNING: Desired charge {desired_charge} is outside the possible range based on the number of redesignable residues.")
         desired_charge = max(min_possible_charge, min(max_possible_charge, desired_charge))
-        tolerance = 0.0
-        print(f"⚠️ Falling back to closest available value: {desired_charge} with tolerance {tolerance}")
+        batch_charge_tolerance = 0.0
+        print(f"⚠️ Falling back to closest available value: {desired_charge} with batch_charge_tolerance {batch_charge_tolerance}")
     
     bias, step_size, direction, history = cfg.initial_bias, 0.2, 0, []
-    best_overall_results = []
+    best_pick = None
 
     for i in range(cfg.max_evals):
         step_dir = protein_out / f"step_{i}_bias_{bias:.3f}"
@@ -606,8 +624,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         
         if not current_results:
             continue
-            
-        best_overall_results = current_results # Store the most recent pool
+        
         charges = [r['charge'] for r in current_results]
         mean_q = sum(charges)/len(charges)
         
@@ -616,9 +633,20 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
 
         print(f"Iteration {i} | Bias: {bias:.3f} | Mean Charge: {mean_q:.2f}")
 
-        if abs(mean_q - desired_charge) <= tolerance:
-            print("Tolerance reached.")
-            break
+        # Check if mean charge is within batch tolerance - if so, try to find a sequence
+        if abs(mean_q - desired_charge) <= batch_charge_tolerance:
+            print(f"Batch charge tolerance reached. Looking for sequence with charge within ±{charge_tolerance}...")
+            
+            # Filter sequences that meet charge criteria
+            candidates = [r for r in current_results if abs(r['charge'] - desired_charge) <= charge_tolerance]
+            
+            if candidates:
+                # Pick the one with best overall_confidence
+                best_pick = max(candidates, key=lambda x: x.get('overall_confidence', 0))
+                print(f"Found suitable sequence with charge {best_pick['charge']} and confidence {best_pick.get('overall_confidence', 'N/A')}")
+                break
+            else:
+                print(f"No sequences found within charge tolerance ±{charge_tolerance}. Continuing bias adjustment...")
         
         new_dir = 1.0 if mean_q < desired_charge else -1.0
         if i > 0 and new_dir != direction: 
@@ -629,9 +657,20 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
     with open(protein_out / "summary.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    # Selection: Find sequence closest to desired charge in the final pool
-    if best_overall_results:
-        best_pick = sorted(best_overall_results, key=lambda x: abs(x['charge'] - desired_charge))[0]
+    # Use the best sequence found during iteration or fallback to closest charge
+    if best_pick is None and history:
+        print("Warning: No sequence found within charge tolerance. Using closest available.")
+        # Collect all sequences from all iterations
+        all_sequences = []
+        for h in history:
+            step_idx = len([x for x in history if x['bias'] < h['bias']])
+            step_dir = protein_out / f"step_{step_idx}_bias_{h['bias']:.3f}"
+            step_results = process_iteration_results(step_dir)
+            all_sequences.extend(step_results)
+        if all_sequences:
+            best_pick = sorted(all_sequences, key=lambda x: abs(x['charge'] - desired_charge))[0]
+    
+    if best_pick:
         
         out_fasta = selection_dir / f"{struct_path.stem}_recharged.fasta"
         out_pdb = selection_dir / f"{struct_path.stem}_recharged.pdb"
