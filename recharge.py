@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 # Biopython
-from Bio.PDB import PDBParser, MMCIFParser, NeighborSearch
+from Bio.PDB import PDBParser, MMCIFParser, MMCIFIO, Select, NeighborSearch
 from Bio.PDB.SASA import ShrakeRupley
 
 # Analysis
@@ -101,6 +101,25 @@ def load_config(path):
     with open(path) as f:
         data = yaml.safe_load(f)
     return Config(**{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
+
+class RedesignedColorMapper(Select):
+    def __init__(self, mutated_res_ids, redesign_chain):
+        self.mutated_res_ids = mutated_res_ids
+        self.redesign_chain = redesign_chain
+
+    def accept_residue(self, residue):
+        chain_id = residue.get_parent().id
+        if chain_id != self.redesign_chain:
+            val = 40.0 # NON_BINDER color (orange)
+        else:
+            if residue.id[1] in self.mutated_res_ids:
+                val = 60.0 # REDESIGNABLE color (yellow) -> REDESIGNED
+            else:
+                val = 100.0 # BURIED color (blue) -> IDENTICAL
+
+        for atom in residue:
+            atom.set_bfactor(val)
+        return 1
 
 # ------------------------------------------------------------------
 # Geometry & Selection
@@ -271,10 +290,6 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, extra_args=None):
         "--batch_size", str(cfg.batch_size),
         "--number_of_batches", "1", 
         "--model_type", "soluble_mpnn",
-        # --pack_side_chains 1 \
-        # --number_of_packs_per_design 0 \
-        "--pack_side_chains", "1",
-        "--number_of_packs_per_design", "1",
         "--seed", str(cfg.seed),
         "--verbose", "0"
     ]
@@ -413,8 +428,25 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         native_seq = get_native_sequence(protein_out / f"step_0_bias_{cfg.initial_bias:.3f}")
         if native_seq:
             print(f"\nAlignment for {struct_path.name}:")
-            print_alignment(native_seq, best_pick['sequence'])
-        
+            new_seq = best_pick['sequence']
+            print_alignment(native_seq, new_seq)
+            
+            # Map sequence mutations to structure residue IDs
+            # LigandMPNN sequence represents residues with CA atoms in the redesign chain
+            chain = struct[0][cfg.redesign_chain]
+            ca_residues = [res for res in chain if 'CA' in res]
+            
+            mutated_res_ids = set()
+            for i, (orig_aa, new_aa) in enumerate(zip(native_seq, new_seq)):
+                if orig_aa != new_aa and i < len(ca_residues):
+                    mutated_res_ids.add(ca_residues[i].id[1])
+            
+            check_cif_path = selection_dir / f"{struct_path.stem}_check_redesigned.cif"
+            io = MMCIFIO()
+            io.set_structure(struct)
+            io.save(str(check_cif_path), RedesignedColorMapper(mutated_res_ids, cfg.redesign_chain))
+            print(f"Saved redesigned structural check map to: {check_cif_path}")
+
         # Copy PDB
         if Path(best_pick['path']).exists():
             shutil.copy(best_pick['path'], out_pdb)
