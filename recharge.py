@@ -84,6 +84,7 @@ class Config:
     avoid_interface_residues_with_chain_distance: float = 0.0
     
     avoid_salt_bridge_residues: bool = False
+    avoid_H_bonding_residues: bool = False
     
     desired_chain_charge: float = 0.0
     tolerance: float = 1.0
@@ -165,6 +166,70 @@ def find_salt_bridges(model, redesign_chain, cutoff=4.0):
                                     
     return salt_bridges
 
+def find_h_bonds(model, redesign_chain, cutoff=3.5):
+    """Identifies residues on the redesign_chain whose side-chains form hydrogen bonds."""
+    h_bonds = set()
+    
+    sc_polar = {
+        'ARG': ['NH1', 'NH2', 'NE'], 'LYS': ['NZ'], 'HIS': ['ND1', 'NE2'],
+        'ASN': ['ND2', 'OD1'], 'GLN': ['NE2', 'OE1'],
+        'SER': ['OG'], 'THR': ['OG1'], 'TYR': ['OH'], 'TRP': ['NE1'],
+        'ASP': ['OD1', 'OD2'], 'GLU': ['OE1', 'OE2']
+    }
+    
+    neg_res = {'ASP': ['OD1', 'OD2'], 'GLU': ['OE1', 'OE2']}
+    pos_res = {'ARG': ['NH1', 'NH2', 'NE'], 'LYS': ['NZ'], 'HIS': ['ND1', 'NE2']}
+    
+    def is_salt_bridge(res1, atom1, res2, atom2):
+        r1, a1 = res1.get_resname(), atom1.get_name()
+        r2, a2 = res2.get_resname(), atom2.get_name()
+        
+        is_neg1 = r1 in neg_res and a1 in neg_res.get(r1, [])
+        is_pos1 = r1 in pos_res and a1 in pos_res.get(r1, [])
+        is_neg2 = r2 in neg_res and a2 in neg_res.get(r2, [])
+        is_pos2 = r2 in pos_res and a2 in pos_res.get(r2, [])
+        
+        return (is_neg1 and is_pos2) or (is_pos1 and is_neg2)
+
+    all_polar_atoms = []
+    for chain in model:
+        for res in chain:
+            for atom in res:
+                if atom.element in ['N', 'O']:
+                    all_polar_atoms.append(atom)
+                    
+    if not all_polar_atoms:
+        return h_bonds
+        
+    ns = NeighborSearch(all_polar_atoms)
+    
+    for chain in model:
+        for res in chain:
+            rname = res.get_resname()
+            if rname in sc_polar:
+                for atom_id in sc_polar[rname]:
+                    if atom_id in res:
+                        close_atoms = ns.search(res[atom_id].get_coord(), cutoff, level='A')
+                        for pa in close_atoms:
+                            other_res = pa.get_parent()
+                            if other_res != res:
+                                # Ignore salt bridges
+                                if is_salt_bridge(res, res[atom_id], other_res, pa):
+                                    continue
+                                    
+                                # Current residue has a side-chain atom involved in an H-bond
+                                if chain.id == redesign_chain:
+                                    h_bonds.add(f"{chain.id}{res.id[1]}")
+                                    
+                                # Check if the other residue is ALSO using a sidechain atom for this H-bond
+                                # If it's a backbone atom like 'N' or 'O', we don't protect it
+                                other_rname = other_res.get_resname()
+                                if other_rname in sc_polar and pa.get_name() in sc_polar[other_rname]:
+                                    if other_res.get_parent().id == redesign_chain:
+                                        h_bonds.add(f"{redesign_chain}{other_res.id[1]}")
+                                    
+    return h_bonds
+
 def get_residue_key(res, chain_id):
     return f"{chain_id}{res.id[1]}"
 
@@ -197,6 +262,9 @@ def select_residues(structure, cfg: Config):
 
     if getattr(cfg, 'avoid_salt_bridge_residues', False):
         excluded.update(find_salt_bridges(model, cfg.redesign_chain))
+        
+    if getattr(cfg, 'avoid_H_bonding_residues', False):
+        excluded.update(find_h_bonds(model, cfg.redesign_chain))
 
     if cfg.avoid_residues_distance > 0:
         for seed_id in cfg.avoid_residues:
@@ -281,6 +349,9 @@ def select_residues_sasa(structure, cfg: Config):
     
     if getattr(cfg, 'avoid_salt_bridge_residues', False):
         excluded.update(find_salt_bridges(model, cfg.redesign_chain))
+        
+    if getattr(cfg, 'avoid_H_bonding_residues', False):
+        excluded.update(find_h_bonds(model, cfg.redesign_chain))
 
     if cfg.avoid_residues_distance > 0:
         for seed_id in cfg.avoid_residues:
