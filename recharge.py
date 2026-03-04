@@ -107,7 +107,98 @@ def load_config(path):
         data = yaml.safe_load(f)
     return Config(**{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
 
+def get_input_files(cfg: Config) -> List[Path]:
+    input_files = []
+    if cfg.input_dir:
+        p = Path(cfg.input_dir)
+        # Sort to ensure consistent order
+        input_files = sorted(list(p.glob("*.pdb")) + list(p.glob("*.cif")))
+    elif cfg.input_structure:
+        input_files = [Path(cfg.input_structure)]
+    return input_files
+
+def get_protected_residues(structure, cfg: Config):
+    """
+    Identifies all residues that should be protected/excluded from redesign 
+    based on config settings (explicit list, salt bridges, h-bonds, distance, interface).
+    Returns a set of residue keys (e.g. 'A10', 'A12').
+    """
+    model = next(structure.get_models())
+    excluded = set(cfg.avoid_residues)
+
+    if getattr(cfg, 'avoid_salt_bridge_residues', False):
+        excluded.update(find_salt_bridges(model, cfg.redesign_chain))
+        
+    if getattr(cfg, 'avoid_H_bonding_residues', False):
+        excluded.update(find_h_bonds(model, cfg.redesign_chain))
+
+    # Only build neighbor search if we need distance-based logic
+    has_dist_avoid = (cfg.avoid_residues_distance > 0 and cfg.avoid_residues)
+    has_interface_avoid = bool(cfg.avoid_interface_residues_with_chain)
+    
+    if not (has_dist_avoid or has_interface_avoid):
+        return excluded
+        
+    atoms = list(model.get_atoms())
+    ns = NeighborSearch(atoms)
+    target_chain = model[cfg.redesign_chain]
+
+    # Distance-based avoid_residues expansion
+    if has_dist_avoid:
+        dist = cfg.avoid_residues_distance
+        for seed_id in cfg.avoid_residues:
+            # Find the residue object matching the ID
+            candidates = [r for r in target_chain if get_residue_key(r, cfg.redesign_chain) == seed_id]
+            if not candidates: continue
+            r_obj = candidates[0]
+            
+            coord = None
+            if 'CB' in r_obj: coord = r_obj['CB'].get_coord()
+            elif 'CA' in r_obj: coord = r_obj['CA'].get_coord()
+            
+            if coord is not None:
+                close = ns.search(coord, dist, level='R')
+                for f in close:
+                    if f.get_parent().id == cfg.redesign_chain:
+                        excluded.add(get_residue_key(f, cfg.redesign_chain))
+
+    # Interface-based protection
+    interface_chains = cfg.avoid_interface_residues_with_chain
+    if isinstance(interface_chains, str):
+        interface_chains = [interface_chains]
+    
+    if interface_chains:
+        dist = max(0.1, cfg.avoid_interface_residues_with_chain_distance)
+        for target_id in interface_chains:
+            if target_id in model:
+                other_atoms = list(model[target_id].get_atoms())
+                for atom in other_atoms:
+                    for r in ns.search(atom.get_coord(), dist, level='R'):
+                        if r.get_parent().id == cfg.redesign_chain:
+                            excluded.add(get_residue_key(r, cfg.redesign_chain))
+
+    return excluded
+
 class RedesignedColorMapper(Select):
+    def __init__(self, mutated_res_ids, redesign_chain):
+        self.mutated_res_ids = mutated_res_ids
+        self.redesign_chain = redesign_chain
+
+    def accept_residue(self, residue):
+        chain_id = residue.get_parent().id
+        if chain_id != self.redesign_chain:
+            val = 40.0 # NON_BINDER color (orange)
+        else:
+            if residue.id[1] in self.mutated_res_ids:
+                val = 60.0 # REDESIGNABLE color (yellow) -> REDESIGNED
+            else:
+                val = 100.0 # BURIED color (blue) -> IDENTICAL
+
+        for atom in residue:
+            atom.set_bfactor(val)
+        return 1
+
+# ------------------------------------------------------------------
     def __init__(self, mutated_res_ids, redesign_chain):
         self.mutated_res_ids = mutated_res_ids
         self.redesign_chain = redesign_chain
@@ -260,47 +351,7 @@ def select_residues(structure, cfg: Config):
         if len(neighbors) < cfg.min_contacts_for_buried:
             surface_candidates.append(get_residue_key(res, cfg.redesign_chain))
 
-    excluded = set(cfg.avoid_residues)
-
-    if getattr(cfg, 'avoid_salt_bridge_residues', False):
-        excluded.update(find_salt_bridges(model, cfg.redesign_chain))
-        
-    if getattr(cfg, 'avoid_H_bonding_residues', False):
-        excluded.update(find_h_bonds(model, cfg.redesign_chain))
-
-    if cfg.avoid_residues_distance > 0:
-        for seed_id in cfg.avoid_residues:
-            try:
-                r_obj = next(r for r in target_chain if get_residue_key(r, cfg.redesign_chain) == seed_id)
-                # Use CB coordinate when available, otherwise CA (glycine)
-                coord = None
-                if 'CB' in r_obj:
-                    coord = r_obj['CB'].get_coord()
-                elif 'CA' in r_obj:
-                    coord = r_obj['CA'].get_coord()
-                if coord is None:
-                    continue
-                close = ns.search(coord, cfg.avoid_residues_distance, level='R')
-                for f in close:
-                    if f.get_parent().id == cfg.redesign_chain:
-                        excluded.add(get_residue_key(f, cfg.redesign_chain))
-            except StopIteration:
-                pass
-
-    interface_chains = cfg.avoid_interface_residues_with_chain
-    if isinstance(interface_chains, str):
-        interface_chains = [interface_chains]
-    
-    if interface_chains:
-        dist = max(0.1, cfg.avoid_interface_residues_with_chain_distance)
-        for target_id in interface_chains:
-            if target_id in model:
-                other_atoms = list(model[target_id].get_atoms())
-                for atom in other_atoms:
-                    for r in ns.search(atom.get_coord(), dist, level='R'):
-                        if r.get_parent().id == cfg.redesign_chain:
-                            excluded.add(get_residue_key(r, cfg.redesign_chain))
-
+    excluded = get_protected_residues(structure, cfg)
     return sorted(list(set(surface_candidates) - excluded), key=lambda x: int(x[1:]))
 
 
@@ -347,47 +398,7 @@ def select_residues_sasa(structure, cfg: Config):
             selected.add(get_residue_key(res, cfg.redesign_chain))
 
     # Apply exclusions (avoid_residues and distance-based and interface)
-    excluded = set(cfg.avoid_residues)
-    
-    if getattr(cfg, 'avoid_salt_bridge_residues', False):
-        excluded.update(find_salt_bridges(model, cfg.redesign_chain))
-        
-    if getattr(cfg, 'avoid_H_bonding_residues', False):
-        excluded.update(find_h_bonds(model, cfg.redesign_chain))
-
-    if cfg.avoid_residues_distance > 0:
-        for seed_id in cfg.avoid_residues:
-            try:
-                r_obj = next(r for r in target_chain if get_residue_key(r, cfg.redesign_chain) == seed_id)
-                coord = None
-                if 'CB' in r_obj:
-                    coord = r_obj['CB'].get_coord()
-                elif 'CA' in r_obj:
-                    coord = r_obj['CA'].get_coord()
-                if coord is None:
-                    continue
-                ns = NeighborSearch(list(model.get_atoms()))
-                close = ns.search(coord, cfg.avoid_residues_distance, level='R')
-                for f in close:
-                    if f.get_parent().id == cfg.redesign_chain:
-                        excluded.add(get_residue_key(f, cfg.redesign_chain))
-            except StopIteration:
-                pass
-
-    interface_chains = cfg.avoid_interface_residues_with_chain
-    if isinstance(interface_chains, str):
-        interface_chains = [interface_chains]
-
-    if interface_chains:
-        dist = max(0.1, cfg.avoid_interface_residues_with_chain_distance)
-        for target_id in interface_chains:
-            if target_id in model:
-                other_atoms = list(model[target_id].get_atoms())
-                ns = NeighborSearch(list(model.get_atoms()))
-                for atom in other_atoms:
-                    for r in ns.search(atom.get_coord(), dist, level='R'):
-                        if r.get_parent().id == cfg.redesign_chain:
-                            excluded.add(get_residue_key(r, cfg.redesign_chain))
+    excluded = get_protected_residues(structure, cfg)
 
     final = sorted(list(selected - excluded), key=lambda x: int(x[1:]))
     return final
@@ -637,12 +648,7 @@ def main():
     selection_dir = out_root / "selection"
     selection_dir.mkdir(exist_ok=True)
 
-    input_files = []
-    if cfg.input_dir:
-        p = Path(cfg.input_dir)
-        input_files = list(p.glob("*.pdb")) + list(p.glob("*.cif"))
-    elif cfg.input_structure:
-        input_files = [Path(cfg.input_structure)]
+    input_files = get_input_files(cfg)
 
     for struct_path in input_files:
         try:

@@ -4,7 +4,7 @@ import yaml
 import os
 from pathlib import Path
 from Bio.PDB import PDBParser, MMCIFParser, MMCIFIO, Select, NeighborSearch
-from recharge import Config, select_residues_sasa, select_residues, find_salt_bridges, find_h_bonds, estimate_charge_range
+from recharge import load_config, get_input_files, get_protected_residues, select_residues_sasa, select_residues, estimate_charge_range, Config
 
 # For quick hyperparameter testing, show default SASA params
 
@@ -54,24 +54,17 @@ def main():
     args = parser.parse_args()
 
     # 1. Load Config
-    with open(args.config) as f:
-        data = yaml.safe_load(f)
-    cfg = Config(**{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
+    cfg = load_config(args.config)
 
     # 2. Setup Check Directory
     check_dir = Path(cfg.out_folder) / "check"
     check_dir.mkdir(parents=True, exist_ok=True)
 
     # 3. Identify Files
-    all_files = []
-    if cfg.input_dir:
-        input_path = Path(cfg.input_dir)
-        all_files = list(input_path.glob("*.cif")) + list(input_path.glob("*.pdb"))
-    elif cfg.input_structure:
-        all_files = [Path(cfg.input_structure)]
+    all_files = get_input_files(cfg)
 
     if not all_files:
-        print(f"No files found in {cfg.input_dir}")
+        print(f"No files found.")
         return
 
     print(f"Processing {len(all_files)} files for selection check...")
@@ -90,52 +83,8 @@ def main():
                 print(f"Using contact-based selection: radius={cfg.contact_radius}, min_contacts={cfg.min_contacts_for_buried}")
                 redesignable = select_residues(struct, cfg)
 
-            # Build protected set (explicit avoid_residues + distance-based & interface neighbors)
-            protected = set(cfg.avoid_residues)
-            ns = None
-            model = next(struct.get_models())
-            target_chain = cfg.redesign_chain
-            
-            if getattr(cfg, 'avoid_salt_bridge_residues', False):
-                protected.update(find_salt_bridges(model, target_chain))
-                
-            if getattr(cfg, 'avoid_H_bonding_residues', False):
-                protected.update(find_h_bonds(model, target_chain))
-
-            # distance-based avoid_residues expansion
-            if cfg.avoid_residues_distance > 0 and cfg.avoid_residues:
-                ns = ns or NeighborSearch(list(model.get_atoms()))
-                for seed_id in cfg.avoid_residues:
-                    try:
-                        r_obj = next(r for r in model[target_chain] if f"{target_chain}{r.id[1]}" == seed_id)
-                        coord = None
-                        if 'CB' in r_obj:
-                            coord = r_obj['CB'].get_coord()
-                        elif 'CA' in r_obj:
-                            coord = r_obj['CA'].get_coord()
-                        if coord is None:
-                            continue
-                        close = ns.search(coord, cfg.avoid_residues_distance, level='R')
-                        for f in close:
-                            if f.get_parent().id == target_chain:
-                                protected.add(f"{target_chain}{f.id[1]}")
-                    except StopIteration:
-                        pass
-
-            # interface-based protected residues
-            interface_chains = cfg.avoid_interface_residues_with_chain
-            if isinstance(interface_chains, str):
-                interface_chains = [interface_chains]
-            if interface_chains:
-                ns = ns or NeighborSearch(list(model.get_atoms()))
-                dist = max(0.1, cfg.avoid_interface_residues_with_chain_distance)
-                for target_id in interface_chains:
-                    if target_id in model:
-                        other_atoms = list(model[target_id].get_atoms())
-                        for atom in other_atoms:
-                            for r in ns.search(atom.get_coord(), dist, level='R'):
-                                if r.get_parent().id == cfg.redesign_chain:
-                                    protected.add(f"{cfg.redesign_chain}{r.id[1]}")
+            # Build protected set using shared utility
+            protected = get_protected_residues(struct, cfg)
 
             # Calculate excluded (buried or otherwise not redesignable)
             all_res = [f"{cfg.redesign_chain}{r.id[1]}" for r in struct[0][cfg.redesign_chain] if 'CA' in r]
@@ -182,9 +131,14 @@ def main():
 
             print("Counts -> " + ", ".join(parts))
             print(f"Estimated charge range for chain {cfg.redesign_chain}: [{min_possible_charge}, {max_possible_charge}]")
+            print(f"Target charge: {cfg.desired_chain_charge}")
             
             if cfg.desired_chain_charge < min_possible_charge or cfg.desired_chain_charge > max_possible_charge:
                 print(f"⚠️ WARNING: Desired charge {cfg.desired_chain_charge} is outside the possible range based on the number of redesignable residues.")
+                closest = max(min_possible_charge, min(max_possible_charge, cfg.desired_chain_charge))
+                print(f"⚠️ Falling back to closest available value: {closest}")
+            else:
+                print(f"✅ Target charge {cfg.desired_chain_charge} is achievable.")
 
             # Save check file
             io = MMCIFIO()
