@@ -40,28 +40,73 @@ AA_COLORS = {
 def color_aa(aa):
     return f"{AA_COLORS.get(aa, '')}{aa}{Colors.RESET}"
 
-def print_alignment(seq1, seq2, width=60):
-    """Prints a simple alignment of two sequences with colored mutations."""
+def print_alignment(seq1, seq2, width=60, ca_residues=None, redesign_res=None, redesign_chain='A'):
+    """
+    Prints an alignment of two sequences with colored mutations.
+    
+    Args:
+        seq1: Original sequence
+        seq2: New sequence
+        width: Width of output
+        ca_residues: List of BioPython residue objects with CA atoms
+        redesign_res: Set of redesignable residue keys (e.g., {'A10', 'A20'})
+        redesign_chain: The chain being redesigned (e.g., 'A')
+    """
+    # Gray color for non-redesignable residues
+    GRAY = "\033[90m"
+    
     for i in range(0, len(seq1), width):
         chunk1 = seq1[i:i+width]
         chunk2 = seq2[i:i+width]
         
         # Original sequence with colored positions that will be changed
         res1 = []
-        for a, b in zip(chunk1, chunk2):
+        for pos, (a, b) in enumerate(zip(chunk1, chunk2)):
+            seq_idx = i + pos
+            
+            # Check if this position is redesignable
+            is_redesignable = False
+            if ca_residues and redesign_res and seq_idx < len(ca_residues):
+                res_id = ca_residues[seq_idx].id[1]
+                res_key = f"{redesign_chain}{res_id}"
+                is_redesignable = res_key in redesign_res
+            
+            # Color based on mutation status and redesignability
             if a != b:
+                # Mutated position - always color the original aa
                 res1.append(color_aa(a))
-            else:
+            elif is_redesignable:
+                # Redesignable but not changed - white
                 res1.append(a)
+            else:
+                # Not redesignable - gray
+                res1.append(f"{GRAY}{a}{Colors.RESET}")
+        
         print(f"Orig: {''.join(res1)}")
         
         # New sequence with colored mutations
         res2 = []
-        for a, b in zip(chunk1, chunk2):
+        for pos, (a, b) in enumerate(zip(chunk1, chunk2)):
+            seq_idx = i + pos
+            
+            # Check if this position is redesignable
+            is_redesignable = False
+            if ca_residues and redesign_res and seq_idx < len(ca_residues):
+                res_id = ca_residues[seq_idx].id[1]
+                res_key = f"{redesign_chain}{res_id}"
+                is_redesignable = res_key in redesign_res
+            
+            # Color based on mutation status and redesignability
             if a != b:
+                # Mutated position - always color the new aa
                 res2.append(color_aa(b))
-            else:
+            elif is_redesignable:
+                # Redesignable but not changed - white
                 res2.append(b)
+            else:
+                # Not redesignable - gray
+                res2.append(f"{GRAY}{b}{Colors.RESET}")
+        
         print(f"New : {''.join(res2)}")
         print()
 
@@ -685,12 +730,13 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         if native_seq:
             print(f"\nAlignment for {struct_path.name}:")
             new_seq = best_pick['sequence']
-            print_alignment(native_seq, new_seq)
             
             # Map sequence mutations to structure residue IDs
             # LigandMPNN sequence represents residues with CA atoms in the redesign chain
             chain = struct[0][cfg.redesign_chain]
             ca_residues = [res for res in chain if 'CA' in res]
+            
+            print_alignment(native_seq, new_seq, ca_residues=ca_residues, redesign_res=set(redesign_res), redesign_chain=cfg.redesign_chain)
             
             mutated_res_ids = set()
             for i, (orig_aa, new_aa) in enumerate(zip(native_seq, new_seq)):
