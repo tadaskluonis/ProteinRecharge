@@ -180,38 +180,24 @@ def get_protected_residues(structure, cfg: Config):
     return excluded
 
 class RedesignedColorMapper(Select):
-    def __init__(self, mutated_res_ids, redesign_chain):
+    def __init__(self, mutated_res_ids, redesign_chain, original_redesign_res=None):
         self.mutated_res_ids = mutated_res_ids
         self.redesign_chain = redesign_chain
+        self.original_redesign_res = original_redesign_res if original_redesign_res is not None else set()
 
     def accept_residue(self, residue):
         chain_id = residue.get_parent().id
+        res_key = f"{chain_id}{residue.id[1]}"
+        
         if chain_id != self.redesign_chain:
             val = 40.0 # NON_BINDER color (orange)
         else:
             if residue.id[1] in self.mutated_res_ids:
-                val = 60.0 # REDESIGNABLE color (yellow) -> REDESIGNED
+                val = 60.0 # REDESIGNED (Yellow)
+            elif res_key in self.original_redesign_res:
+                val = 80.0 # REDESIGNABLE but not mutated (Protected/Light Blue)
             else:
-                val = 100.0 # BURIED color (blue) -> IDENTICAL
-
-        for atom in residue:
-            atom.set_bfactor(val)
-        return 1
-
-# ------------------------------------------------------------------
-    def __init__(self, mutated_res_ids, redesign_chain):
-        self.mutated_res_ids = mutated_res_ids
-        self.redesign_chain = redesign_chain
-
-    def accept_residue(self, residue):
-        chain_id = residue.get_parent().id
-        if chain_id != self.redesign_chain:
-            val = 40.0 # NON_BINDER color (orange)
-        else:
-            if residue.id[1] in self.mutated_res_ids:
-                val = 60.0 # REDESIGNABLE color (yellow) -> REDESIGNED
-            else:
-                val = 100.0 # BURIED color (blue) -> IDENTICAL
+                val = 100.0 # IDENTICAL/BURIED (Dark Blue)
 
         for atom in residue:
             atom.set_bfactor(val)
@@ -612,8 +598,27 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
             check_cif_path = selection_dir / f"{struct_path.stem}_check_redesigned.cif"
             io = MMCIFIO()
             io.set_structure(struct)
-            io.save(str(check_cif_path), RedesignedColorMapper(mutated_res_ids, cfg.redesign_chain))
+            io.save(str(check_cif_path), RedesignedColorMapper(mutated_res_ids, cfg.redesign_chain, set(redesign_res)))
+            
+            plddt_colors = {
+                "mutated": "0xf6ed12",      # Yellow (Low PLDDT)
+                "redesignable": "0x10cff1", # Light Blue (Confident PLDDT)
+                "buried": "0x106dff",       # Dark Blue (Very High PLDDT)
+                "non_binder": "0xef821e",   # Orange (Very Low PLDDT)
+            }
+            def hex_to_rgb(h):
+                h = h.lower().replace("0x", "")
+                return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            def color_text(text, hexcode):
+                r, g, b = hex_to_rgb(hexcode)
+                return f"\x1b[38;2;{r};{g};{b}m{text}\x1b[0m"
+
             print(f"Saved redesigned structural check map to: {check_cif_path}")
+            print("Color Scheme:")
+            print(f"  {color_text('REDESIGNED', plddt_colors['mutated'])} (Yellow)")
+            print(f"  {color_text('REDESIGNABLE (Unchanged)', plddt_colors['redesignable'])} (Light Blue)")
+            print(f"  {color_text('BURIED/PROTECTED', plddt_colors['buried'])} (Dark Blue)")
+            print(f"  {color_text('NON-BINDER', plddt_colors['non_binder'])} (Orange)")
 
         # Copy PDB
         if Path(best_pick['path']).exists():
