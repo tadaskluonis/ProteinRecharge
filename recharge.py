@@ -83,6 +83,8 @@ class Config:
     avoid_interface_residues_with_chain: List[str] = field(default_factory=list)
     avoid_interface_residues_with_chain_distance: float = 0.0
     
+    avoid_salt_bridge_residues: bool = False
+    
     desired_chain_charge: float = 0.0
     tolerance: float = 1.0
     initial_bias: float = 0.0
@@ -125,6 +127,44 @@ class RedesignedColorMapper(Select):
 # Geometry & Selection
 # ------------------------------------------------------------------
 
+def find_salt_bridges(model, redesign_chain, cutoff=4.0):
+    """Identifies residues on the redesign_chain involved in salt bridges."""
+    salt_bridges = set()
+    
+    neg_res = {'ASP': ['OD1', 'OD2'], 'GLU': ['OE1', 'OE2']}
+    pos_res = {'ARG': ['NH1', 'NH2', 'NE'], 'LYS': ['NZ'], 'HIS': ['ND1', 'NE2']}
+    
+    pos_atoms = []
+    for chain in model:
+        for res in chain:
+            rname = res.get_resname()
+            if rname in pos_res:
+                for atom_id in pos_res[rname]:
+                    if atom_id in res:
+                        pos_atoms.append(res[atom_id])
+                        
+    if not pos_atoms:
+        return salt_bridges
+        
+    ns = NeighborSearch(pos_atoms)
+    
+    for chain in model:
+        for res in chain:
+            rname = res.get_resname()
+            if rname in neg_res:
+                for atom_id in neg_res[rname]:
+                    if atom_id in res:
+                        close_pos_atoms = ns.search(res[atom_id].get_coord(), cutoff, level='A')
+                        if close_pos_atoms:
+                            # We found a salt bridge! Process both sides.
+                            if chain.id == redesign_chain:
+                                salt_bridges.add(f"{chain.id}{res.id[1]}")
+                            for pa in close_pos_atoms:
+                                if pa.get_parent().get_parent().id == redesign_chain:
+                                    salt_bridges.add(f"{redesign_chain}{pa.get_parent().id[1]}")
+                                    
+    return salt_bridges
+
 def get_residue_key(res, chain_id):
     return f"{chain_id}{res.id[1]}"
 
@@ -154,6 +194,9 @@ def select_residues(structure, cfg: Config):
             surface_candidates.append(get_residue_key(res, cfg.redesign_chain))
 
     excluded = set(cfg.avoid_residues)
+
+    if getattr(cfg, 'avoid_salt_bridge_residues', False):
+        excluded.update(find_salt_bridges(model, cfg.redesign_chain))
 
     if cfg.avoid_residues_distance > 0:
         for seed_id in cfg.avoid_residues:
@@ -235,6 +278,9 @@ def select_residues_sasa(structure, cfg: Config):
 
     # Apply exclusions (avoid_residues and distance-based and interface)
     excluded = set(cfg.avoid_residues)
+    
+    if getattr(cfg, 'avoid_salt_bridge_residues', False):
+        excluded.update(find_salt_bridges(model, cfg.redesign_chain))
 
     if cfg.avoid_residues_distance > 0:
         for seed_id in cfg.avoid_residues:

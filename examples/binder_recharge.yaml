@@ -17,6 +17,8 @@ redesign_chain: "A"
 avoid_residues: ["A143", "A147"]
 avoid_residues_distance: 0  # Å; 0 means "only those exact residues"
 
+avoid_salt_bridge_residues: True
+
 # If chain B is the target, also avoid interface residues on chain A that contact chain B
 avoid_interface_residues_with_chain: "T"
 avoid_interface_residues_with_chain_distance: 6.0  # Å

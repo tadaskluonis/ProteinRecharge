@@ -4,7 +4,7 @@ import yaml
 import os
 from pathlib import Path
 from Bio.PDB import PDBParser, MMCIFParser, MMCIFIO, Select, NeighborSearch
-from recharge import Config, select_residues_sasa
+from recharge import Config, select_residues_sasa, find_salt_bridges
 
 # For quick hyperparameter testing, show default SASA params
 
@@ -91,6 +91,9 @@ def main():
             ns = None
             model = next(struct.get_models())
             target_chain = cfg.redesign_chain
+            
+            if getattr(cfg, 'avoid_salt_bridge_residues', False):
+                protected.update(find_salt_bridges(model, target_chain))
 
             # distance-based avoid_residues expansion
             if cfg.avoid_residues_distance > 0 and cfg.avoid_residues:
