@@ -90,6 +90,8 @@ class Config:
     tolerance: float = 1.0
     initial_bias: float = 0.0
 
+    selection_method: str = "sasa" # 'sasa' or 'contact'
+
     # SASA-based selection parameters
     sasa_fraction: float = 0.25        # fraction of max residue SASA to consider exposed
     sasa_threshold: Optional[float] = None  # absolute SASA (Å^2) threshold; set to a number to use an absolute cutoff
@@ -475,6 +477,27 @@ def update_plot(history, out_folder):
     plt.savefig(Path(out_folder) / "charge_plot.png")
     plt.close()
 
+def estimate_charge_range(struct, cfg: Config, redesign_res: List[str]):
+    """Calculates min and max possible charge for redesign_chain, 
+    accounting for fixed residues and number of redesignable spots."""
+    target_chain = struct[0][cfg.redesign_chain]
+    fixed_charge = 0
+    for res in target_chain:
+        # Ignore hetero/water
+        if res.id[0] != ' ':
+            continue
+        key = get_residue_key(res, cfg.redesign_chain)
+        if key not in redesign_res:
+            rname = res.get_resname()
+            if rname in ['LYS', 'ARG']:
+                fixed_charge += 1
+            elif rname in ['ASP', 'GLU']:
+                fixed_charge -= 1
+                
+    min_possible_charge = fixed_charge - len(redesign_res)
+    max_possible_charge = fixed_charge + len(redesign_res)
+    return min_possible_charge, max_possible_charge
+
 # ------------------------------------------------------------------
 # Main Logic
 # ------------------------------------------------------------------
@@ -491,10 +514,27 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
     # Update current path for the subprocess call
     cfg.input_structure = str(struct_path)
 
-    redesign_res = select_residues(struct, cfg)
-    print(f"Selected {len(redesign_res)} residues for redesign.")
+    if getattr(cfg, 'selection_method', 'contact') == 'sasa':
+        redesign_res = select_residues_sasa(struct, cfg)
+        print(f"Using SASA selection. Selected {len(redesign_res)} residues for redesign.")
+    else:
+        redesign_res = select_residues(struct, cfg)
+        print(f"Using contact-based selection. Selected {len(redesign_res)} residues for redesign.")
     
-    bias, step_size, direction, history = cfg.initial_bias, 0.2, 0, []
+    # Calculate charge bounds
+    min_possible_charge, max_possible_charge = estimate_charge_range(struct, cfg, redesign_res)
+    
+    print(f"Estimated charge range for chain {cfg.redesign_chain}: [{min_possible_charge}, {max_possible_charge}]")
+    
+    desired_charge = cfg.desired_chain_charge
+    tolerance = cfg.tolerance
+    if desired_charge < min_possible_charge or desired_charge > max_possible_charge:
+        print(f"⚠️ WARNING: Desired charge {desired_charge} is outside the possible range based on the number of redesignable residues.")
+        desired_charge = max(min_possible_charge, min(max_possible_charge, desired_charge))
+        tolerance = 0.0
+        print(f"⚠️ Falling back to closest available value: {desired_charge} with tolerance {tolerance}")
+    
+    bias, step_size, direction, history = cfg.initial_bias, 0.6, 0, []
     best_overall_results = []
 
     for i in range(cfg.max_evals):
@@ -511,16 +551,16 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         charges = [r['charge'] for r in current_results]
         mean_q = sum(charges)/len(charges)
         
-        history.append({'bias': bias, 'mean_charge': mean_q, 'charges': charges, 'desired': cfg.desired_chain_charge})
+        history.append({'bias': bias, 'mean_charge': mean_q, 'charges': charges, 'desired': desired_charge})
         update_plot(history, protein_out)
 
         print(f"Iteration {i} | Bias: {bias:.3f} | Mean Charge: {mean_q:.2f}")
 
-        if abs(mean_q - cfg.desired_chain_charge) <= cfg.tolerance:
+        if abs(mean_q - desired_charge) <= tolerance:
             print("Tolerance reached.")
             break
         
-        new_dir = 1.0 if mean_q < cfg.desired_chain_charge else -1.0
+        new_dir = 1.0 if mean_q < desired_charge else -1.0
         if i > 0 and new_dir != direction: 
             step_size *= 0.5
         direction = new_dir
@@ -531,7 +571,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
 
     # Selection: Find sequence closest to desired charge in the final pool
     if best_overall_results:
-        best_pick = sorted(best_overall_results, key=lambda x: abs(x['charge'] - cfg.desired_chain_charge))[0]
+        best_pick = sorted(best_overall_results, key=lambda x: abs(x['charge'] - desired_charge))[0]
         
         out_fasta = selection_dir / f"{struct_path.stem}_recharged.fasta"
         out_pdb = selection_dir / f"{struct_path.stem}_recharged.pdb"
@@ -570,12 +610,27 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
             
         print(f"Saved best design (Charge {best_pick['charge']}) to selection folder.")
 
+def print_config(cfg: Config):
+    lines = []
+    lines.append(f"┌─{'─'*70}─┐")
+    lines.append(f"│ {'ProteinRecharge Configuration':<70} │")
+    lines.append(f"├─{'─'*70}─┤")
+    for k, v in cfg.__dict__.items():
+        val_str = str(v)
+        if len(val_str) > 40:
+            val_str = val_str[:37] + "..."
+        lines.append(f"│ {k:<28}: {val_str:<39} │")
+    lines.append(f"└─{'─'*70}─┘")
+    print("\n".join(lines))
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
     args = parser.parse_args()
     
     cfg = load_config(args.config)
+    print_config(cfg)
+    
     out_root = Path(cfg.out_folder)
     out_root.mkdir(parents=True, exist_ok=True)
     

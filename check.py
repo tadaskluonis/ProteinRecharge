@@ -4,7 +4,7 @@ import yaml
 import os
 from pathlib import Path
 from Bio.PDB import PDBParser, MMCIFParser, MMCIFIO, Select, NeighborSearch
-from recharge import Config, select_residues_sasa, find_salt_bridges, find_h_bonds
+from recharge import Config, select_residues_sasa, select_residues, find_salt_bridges, find_h_bonds, estimate_charge_range
 
 # For quick hyperparameter testing, show default SASA params
 
@@ -82,9 +82,13 @@ def main():
             p = MMCIFParser(QUIET=True) if in_file.suffix == '.cif' else PDBParser(QUIET=True)
             struct = p.get_structure(in_file.stem, str(in_file))
             
-            # Run SASA-based selection logic
-            print(f"Using SASA selection: fraction={cfg.sasa_fraction}, threshold={cfg.sasa_threshold}")  # threshold=None means only fraction is used
-            redesignable = select_residues_sasa(struct, cfg)
+            # Run selection logic based on config
+            if getattr(cfg, 'selection_method', 'contact') == 'sasa':
+                print(f"Using SASA selection: fraction={cfg.sasa_fraction}, threshold={cfg.sasa_threshold}")  # threshold=None means only fraction is used
+                redesignable = select_residues_sasa(struct, cfg)
+            else:
+                print(f"Using contact-based selection: radius={cfg.contact_radius}, min_contacts={cfg.min_contacts_for_buried}")
+                redesignable = select_residues(struct, cfg)
 
             # Build protected set (explicit avoid_residues + distance-based & interface neighbors)
             protected = set(cfg.avoid_residues)
@@ -147,6 +151,9 @@ def main():
                 if ch.id == cfg.redesign_chain:
                     continue
                 non_binder_count += sum(1 for r in ch if 'CA' in r)
+                
+            # Estimated charge range
+            min_possible_charge, max_possible_charge = estimate_charge_range(struct, cfg, redesignable)
 
             plddt_colors = {
                 "very_low_plddt": "0xef821e",
@@ -174,6 +181,10 @@ def main():
                 parts.append(f"{color_text(cat, mapping[cat])}: {cnt}")
 
             print("Counts -> " + ", ".join(parts))
+            print(f"Estimated charge range for chain {cfg.redesign_chain}: [{min_possible_charge}, {max_possible_charge}]")
+            
+            if cfg.desired_chain_charge < min_possible_charge or cfg.desired_chain_charge > max_possible_charge:
+                print(f"⚠️ WARNING: Desired charge {cfg.desired_chain_charge} is outside the possible range based on the number of redesignable residues.")
 
             # Save check file
             io = MMCIFIO()
