@@ -490,7 +490,8 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, pdb_path, extra_arg
         "--model_type", "soluble_mpnn",
         "--seed", str(cfg.seed),
         "--verbose", "0",
-        "--parse_these_chains_only", cfg.redesign_chain
+        # Keep full-complex context while redesigning only the target chain.
+        "--chains_to_design", cfg.redesign_chain
     ]
     if extra_args: cmd.extend(extra_args)
 
@@ -505,7 +506,36 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, pdb_path, extra_arg
     cwd_dir = Path(cfg.ligandmpnn_run_py).parent
     subprocess.run(full_cmd, shell=True, check=True, executable="/bin/bash", cwd=str(cwd_dir))
 
-def get_native_sequence(step_dir):
+def get_chain_order(struct, redesign_chain):
+    """Return protein chain order as represented in LigandMPNN FASTA outputs."""
+    model = struct[0]
+    chain_order = []
+    for ch in model:
+        has_protein_ca = any(res.id[0] == ' ' and 'CA' in res for res in ch)
+        if has_protein_ca:
+            chain_order.append(ch.id)
+    if redesign_chain not in chain_order:
+        raise ValueError(
+            f"Redesign chain '{redesign_chain}' was not found among parsed protein chains: {chain_order}"
+        )
+    return chain_order
+
+def extract_redesign_chain_sequence(seq_line: str, redesign_chain: str, chain_order: List[str]) -> str:
+    """Extract the redesign-chain sequence from a LigandMPNN FASTA sequence line."""
+    seq_line = seq_line.strip()
+    if ":" not in seq_line:
+        return seq_line
+
+    parts = seq_line.split(":")
+    chain_idx = chain_order.index(redesign_chain)
+    if chain_idx >= len(parts):
+        raise ValueError(
+            f"Cannot map redesign chain '{redesign_chain}' to FASTA parts. "
+            f"Chain order: {chain_order}, FASTA parts: {len(parts)}"
+        )
+    return parts[chain_idx]
+
+def get_native_sequence(step_dir, redesign_chain, chain_order):
     p = Path(step_dir)
     seq_dir = p / "seqs"
     if not seq_dir.exists(): return None
@@ -516,10 +546,10 @@ def get_native_sequence(step_dir):
     lines = fa_file.read_text().splitlines()
     if len(lines) >= 2:
         # Native is always index 1 (the first sequence)
-        return lines[1].split(":")[0]
+        return extract_redesign_chain_sequence(lines[1], redesign_chain, chain_order)
     return None
 
-def process_iteration_results(step_dir):
+def process_iteration_results(step_dir, redesign_chain, chain_order):
     results = []
     p = Path(step_dir)
     seq_dir = p / "seqs"
@@ -530,7 +560,7 @@ def process_iteration_results(step_dir):
         # skip index 0 as it is the native sequence in LigandMPNN outputs
         for i in range(3, len(lines), 2): 
             header, seq = lines[i-1], lines[i]
-            s = seq.split(":")[0]
+            s = extract_redesign_chain_sequence(seq, redesign_chain, chain_order)
             charge = (s.count("K") + s.count("R")) - (s.count("D") + s.count("E"))
             
             name = header.split(",")[0].replace(">", "").strip()
@@ -633,6 +663,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
 
     parser = MMCIFParser(QUIET=True) if struct_path.suffix == '.cif' else PDBParser(QUIET=True)
     struct = parser.get_structure(struct_path.stem, str(struct_path))
+    chain_order = get_chain_order(struct, cfg.redesign_chain)
     
     # input_pdb_path is passed directly to run_ligandmpnn
 
@@ -665,7 +696,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         step_dir.mkdir(exist_ok=True)
         
         run_ligandmpnn(cfg, str(step_dir), redesign_res, bias, pdb_path=str(struct_path))
-        current_results = process_iteration_results(step_dir)
+        current_results = process_iteration_results(step_dir, cfg.redesign_chain, chain_order)
         
         if not current_results:
             continue
@@ -710,7 +741,7 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         for h in history:
             step_idx = len([x for x in history if x['bias'] < h['bias']])
             step_dir = protein_out / f"step_{step_idx}_bias_{h['bias']:.3f}"
-            step_results = process_iteration_results(step_dir)
+            step_results = process_iteration_results(step_dir, cfg.redesign_chain, chain_order)
             all_sequences.extend(step_results)
         if all_sequences:
             best_pick = sorted(all_sequences, key=lambda x: abs(x['charge'] - desired_charge))[0]
@@ -726,7 +757,11 @@ def run_recharge_pipeline(struct_path: Path, cfg: Config, selection_dir: Path):
         
         # Get native for alignment
         # Usually step_0 is run first, so we might find native there or any step.
-        native_seq = get_native_sequence(protein_out / f"step_0_bias_{cfg.initial_bias:.3f}")
+        native_seq = get_native_sequence(
+            protein_out / f"step_0_bias_{cfg.initial_bias:.3f}",
+            cfg.redesign_chain,
+            chain_order
+        )
         if native_seq:
             print(f"\nAlignment for {struct_path.name}:")
             new_seq = best_pick['sequence']

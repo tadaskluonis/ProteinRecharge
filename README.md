@@ -82,3 +82,22 @@ It will use biopython's SASA to identify burried residues. Also, it will account
 ```bash
 python recharge.py examples/binder_recharge.yaml
 ```
+
+## Chain/context behavior (important)
+
+- ProteinRecharge redesigns only `redesign_chain`, while keeping other protein chains as fixed context in LigandMPNN (`--chains_to_design`).
+- This preserves multi-chain structural context during design.
+- For multi-chain FASTA outputs (`A_seq:B_seq:...`), ProteinRecharge now maps and analyzes the configured `redesign_chain` segment for:
+  - sequence alignment/mutation reporting
+  - charge calculations and charge-target optimization
+
+## Full-chain redesign on target chain
+
+If you want **all residues** on the redesign chain to be redesignable (not only exposed residues), set:
+
+```yaml
+selection_method: "sasa"
+sasa_fraction: 0.0
+```
+
+Keep `avoid_residues: []` and related avoid settings disabled if you do not want any explicit exclusions.
