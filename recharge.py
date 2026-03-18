@@ -507,13 +507,14 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, pdb_path, extra_arg
     subprocess.run(full_cmd, shell=True, check=True, executable="/bin/bash", cwd=str(cwd_dir))
 
 def get_chain_order(struct, redesign_chain):
-    """Return protein chain order as represented in LigandMPNN FASTA outputs."""
+    """Return protein chain IDs in deterministic alphabetical order for FASTA mapping."""
     model = struct[0]
     chain_order = []
     for ch in model:
         has_protein_ca = any(res.id[0] == ' ' and 'CA' in res for res in ch)
         if has_protein_ca:
             chain_order.append(ch.id)
+    chain_order = sorted(chain_order)
     if redesign_chain not in chain_order:
         raise ValueError(
             f"Redesign chain '{redesign_chain}' was not found among parsed protein chains: {chain_order}"
