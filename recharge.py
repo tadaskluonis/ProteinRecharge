@@ -134,6 +134,7 @@ class Config:
     batch_charge_tolerance: float = 1.0  # Tolerance for mean batch charge to stop bias adjustment
     charge_tolerance: float = 1.0        # Tolerance for individual sequence charge in final pick
     initial_bias: float = 0.0
+    omit_AA: str = "C"
 
     selection_method: str = "sasa" # 'sasa' or 'contact'
 
@@ -490,6 +491,7 @@ def run_ligandmpnn(cfg: Config, out_dir, residues, bias_val, pdb_path, extra_arg
         "--model_type", "soluble_mpnn",
         "--seed", str(cfg.seed),
         "--verbose", "0",
+        "--omit_AA", cfg.omit_AA,
         # Keep full-complex context while redesigning only the target chain.
         "--chains_to_design", cfg.redesign_chain
     ]

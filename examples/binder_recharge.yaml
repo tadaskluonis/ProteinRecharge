@@ -34,3 +34,6 @@ charge_tolerance: 4.0        # Tolerance for individual sequence charge in final
 ligandmpnn_run_py: "/home/tadas/code/LigandMPNN/run.py"
 # Name of conda environment with LigandMPNN installed, or leave empty to use current env
 ligandmpnn_conda_env: "ligandmpnn_env"
+
+# Default is "C" (omit cysteine from redesign proposals). Override as needed.
+omit_AA: "C"

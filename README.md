@@ -23,6 +23,7 @@ cd ProteinRecharge
 ```yaml
 ligandmpnn_run_py: "/path/to/LigandMPNN/run.py"   # path to the LigandMPNN runner
 ligandmpnn_conda_env: "ligandmpnn_env"          # or "" to use the current env
+omit_AA: "C"                                    # default; override to allow cysteine
 ```
 
 4. Check your configuration by running:
