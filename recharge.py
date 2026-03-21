@@ -134,7 +134,7 @@ class Config:
     batch_charge_tolerance: float = 1.0  # Tolerance for mean batch charge to stop bias adjustment
     charge_tolerance: float = 1.0        # Tolerance for individual sequence charge in final pick
     initial_bias: float = 0.0
-    omit_AA: str = "C"
+    omit_AA: str = "CX"
 
     selection_method: str = "sasa" # 'sasa' or 'contact'
 
