@@ -84,6 +84,119 @@ It will use biopython's SASA to identify burried residues. Also, it will account
 python recharge.py examples/binder_recharge.yaml
 ```
 
+## Usage
+
+Basic usage:
+
+```bash
+# Check configuration and selected residues
+python check.py examples/binder_recharge.yaml
+
+# Run the redesign pipeline
+python recharge.py examples/binder_recharge.yaml
+```
+
+Where to look for outputs:
+
+- Generated design inputs and logs will be placed alongside the provided YAML (see examples/ for sample outputs).
+- A `.cif` file visualizing selected residues will be produced by the check step.
+
+### Full example configuration
+
+Below is a full example YAML configuration covering commonly used options. Copy this to `examples/binder_recharge_full.yaml` and edit paths for your environment.
+
+```yaml
+# Full example config for ProteinRecharge
+# Edit the paths and settings to match your environment
+
+# Path to LigandMPNN runner (run.py from LigandMPNN repo)
+ligandmpnn_run_py: "/path/to/LigandMPNN/run.py"
+# Conda environment name to activate for LigandMPNN, or empty string to use current env
+ligandmpnn_conda_env: "ligandmpnn_env"
+
+# Input structures: specify individual files and/or directories
+inputs:
+  - input_pdb_path: "inputs/my_binder.pdb"
+
+# Chain on which redesign should occur (single letter or chain id)
+redesign_chain: "A"
+
+# Residues to avoid (explicit list of residue numbers on redesign chain)
+avoid_residues: []
+# Interface residues with specified chains to avoid (e.g. ["B", "C"])
+avoid_interface_residues_with_chain: []
+
+# Selection method for redesignable residues: "sasa" or "contact"
+selection_method: "sasa"
+# If using sasa, fraction threshold (0.0 means all residues are considered exposed)
+sasa_fraction: 0.15
+
+# Omit amino acids from redesign (string, e.g. "C" to omit cysteine), default is "CX"
+omit_AA: "C"
+
+# Charge target optimization (optional)
+desired_chain_charge: 0.0     # desired net charge for redesign chain
+charge_tolerance: 1.0         # allowed deviation from desired_chain_charge
+
+# Output directory
+out_folder: "outputs/my_binder_recharge"
+```
+
+### Small config examples
+
+Below are two compact config examples showing common variants.
+
+1) Full-chain redesign on target chain (make every residue on the redesign chain redesignable):
+
+```yaml
+# full-chain redesign: set sasa_fraction to 0.0 and disable explicit avoids
+inputs:
+  - input_pdb_path: "inputs/my_binder.pdb"
+redesign_chain: "A"
+ligandmpnn_run_py: "/path/to/LigandMPNN/run.py"
+ligandmpnn_conda_env: "ligandmpnn_env"
+selection_method: "sasa"
+sasa_fraction: 0.0   # 0.0 -> treat all residues on redesign_chain as exposed
+avoid_residues: []
+avoid_interface_residues_with_chain: []
+omit_AA: ""          # empty string allows cysteines and all residues
+out_folder: "outputs/full_chain_recharge"
+```
+
+Notes: keep avoid lists empty to allow redesign of the whole chain; set omit_AA to empty string to allow all amino acids.
+
+2) Running the pipeline over many structures in a directory
+
+Use the `inputs` list in the config to specify both individual files and directories. The pipeline will process all `.pdb` and `.cif` files found in listed directories.
+
+```yaml
+# Specify multiple inputs: single files and/or directories
+inputs:
+  - input_pdb_path: "inputs/binder_1.pdb"
+  - input_pdb_path: "inputs/binder_2.pdb"
+  - input_pdb_dir: "inputs/batch_designs/"  # Processes all *.pdb and *.cif in this directory
+
+# Common settings (applied to all input structures)
+ligandmpnn_run_py: "/path/to/LigandMPNN/run.py"
+ligandmpnn_conda_env: "ligandmpnn_env"
+redesign_chain: "A"
+selection_method: "sasa"
+sasa_fraction: 0.15
+out_folder: "outputs/batch_recharge"
+```
+
+Run:
+
+```bash
+python recharge.py examples/batch_config.yaml
+```
+
+The pipeline will:
+- Collect all structures from specified paths and directories.
+- Apply the same redesign parameters to each structure.
+- Generate outputs in `out_folder` for each input file.
+
+
 ## Chain/context behavior (important)
 
 - ProteinRecharge redesigns only `redesign_chain`, while keeping other protein chains as fixed context in LigandMPNN (`--chains_to_design`).
